@@ -1,0 +1,488 @@
+import os
+import re
+from typing import List, Dict, Any, Tuple
+import utils
+import navigation
+import analysis
+import fnmatch
+import ctypes
+from pathlib import Path
+
+def find_files_windows(pattern: str, path: str, case_sensitive: bool = False,
+                       current_path: str = None, matched_files: List[str] = None) -> List[str]:
+
+    if matched_files is None:
+        matched_files = []
+
+    if current_path is None:
+        current_path = path
+
+    if case_sensitive:
+        match_func = lambda name, pat: fnmatch.fnmatchcase(name, pat)
+    else:
+        match_func = lambda name, pat: fnmatch.fnmatchcase(name.lower(), pat.lower())
+
+    try:
+        validity, items = navigation.list_directory(current_path)
+        if not validity:
+            return matched_files
+
+        for item in items:
+            item_path = os.path.join(current_path, item["name"])
+
+            if os.path.islink(item_path) or is_junction_points(item_path):
+                continue
+
+            if item["type"] == "folder":
+                # рекурсивный вызов той же функции, передаем current_path
+                find_files_windows(pattern, path, case_sensitive, item_path, matched_files)
+            elif item["type"] == "file":
+                if match_func(item["name"], pattern):
+                    matched_files.append(item_path)
+
+    except Exception:
+        pass
+
+    return matched_files
+
+
+def find_by_windows_extension(extensions: List[str], path: str) -> List[str]:
+    """
+    Поиск файлов по списку расширений Windows с предварительной оптимизацией.
+
+    Args:
+        extensions: Список расширений для поиска (с поддержкой формата с точкой и без)
+        path: Корневая директория для поиска
+
+    Returns:
+        Список полных путей к найденным файлам
+    """
+    # Проверка базовых условий
+    if not os.path.exists(path):
+        return []
+
+    if not os.path.isdir(path):
+        return []
+
+    if not extensions:
+        return []
+
+    # 1. Нормализация входных расширений
+    # Добавляем точку при необходимости и приводим к нижнему регистру
+    normalized_exts = []
+    for ext in extensions:
+        cleaned_ext = ext.strip().lower()
+        if not cleaned_ext.startswith('.'):
+            cleaned_ext = f".{cleaned_ext}"
+        normalized_exts.append(cleaned_ext)
+
+    # 2. Предварительный анализ каталога через analyze_windows_file_types
+    # Оптимизация: если нужных расширений нет в статистике — сразу возвращаем пустой список
+    success, file_type_stats = analysis.analyze_windows_file_types(path)
+    if not success:
+        return []
+
+    # Фильтруем только те расширения, которые присутствуют в каталоге
+    relevant_exts = [
+        ext for ext in normalized_exts
+        if ext in file_type_stats and file_type_stats[ext]["count"] > 0
+    ]
+
+    if not relevant_exts:
+        return []
+
+    # 3. Рекурсивный поиск файлов с нужными расширениями
+    matched_files: List[str] = []
+
+    def recursive_scan(current_dir: str) -> None:
+        """Внутренняя функция для рекурсивного обхода каталогов"""
+        try:
+            validity, items = navigation.list_directory(current_dir)
+            if not validity:
+                return
+
+            for item in items:
+                full_path = os.path.join(current_dir, item["name"])
+
+                # Пропускаем символические ссылки и точки подключения (junction points)
+                if os.path.islink(full_path) or is_junction_points(full_path):
+                    continue
+
+                if item["type"] == "folder":
+                    # Рекурсивно сканируем подкаталог
+                    recursive_scan(full_path)
+                elif item["type"] == "file":
+                    # Проверяем расширение файла
+                    _, file_ext = os.path.splitext(item["name"])
+                    if file_ext.lower() in relevant_exts:
+                        matched_files.append(full_path)
+
+        except (PermissionError, OSError, Exception):
+            # Игнорируем недоступные каталоги и ошибки доступа
+            pass
+
+    # Запускаем сканирование
+    recursive_scan(path)
+
+    return matched_files
+
+
+def find_large_files_windows(min_size_mb: float, path: str) -> List[Dict[str, Any]]:
+    """Поиск крупных файлов в Windows"""
+    large_files = []
+    min_size_bytes = min_size_mb * 1024 * 1024
+
+    def scan_directory(dir_path: str):
+        try:
+            validity, items = navigation.list_directory(dir_path)
+            if not validity:
+                return
+
+            for item in items:
+                full_path = os.path.join(dir_path, item["name"])
+
+                # Пропускаем символические ссылки и junction points
+                if os.path.islink(full_path) or is_junction_points(full_path):
+                    continue
+
+                if item["type"] == "file":
+                    try:
+                        file_size = item.get("size", os.path.getsize(full_path))
+                        if file_size >= min_size_bytes:
+                            file_ext = os.path.splitext(item["name"])[1]
+                            large_files.append({
+                                'path': full_path,
+                                'size_mb': round(file_size / (1024 * 1024), 2),
+                                'type': file_ext if file_ext else 'no_extension'
+                            })
+                    except Exception:
+                        pass
+
+                elif item["type"] == "folder":
+                    # Можно использовать count_bytes для предварительной проверки
+                    # есть ли смысл сканировать папку
+                    success, folder_size = count_bytes(full_path)
+                    if success and folder_size >= min_size_bytes:
+                        scan_directory(full_path)
+
+        except Exception:
+            pass
+
+    scan_directory(path)
+    return large_files
+
+
+def get_windows_file_attributes_stats(path: str) -> Dict[str, int]:
+    """Статистика по атрибутам файлов Windows"""
+
+    stats = {
+        'hidden': 0,
+        'system': 0,
+        'readonly': 0
+    }
+
+    def get_attributes(file_path: str) -> tuple:
+        """Получение атрибутов файла"""
+        is_hidden = False
+        is_system = False
+        is_readonly = False
+
+        if not Path(file_path).exists():
+            return is_hidden, is_system, is_readonly
+
+        # Используем is_hidden_windows_file из utils
+        is_hidden = is_hidden_windows_file(file_path)
+
+        # Получаем остальные атрибуты
+        try:
+            attrs = ctypes.windll.kernel32.GetFileAttributesW(str(file_path))
+            if attrs != -1:
+                is_system = bool(attrs & 0x04)  # FILE_ATTRIBUTE_SYSTEM
+                is_readonly = bool(attrs & 0x01)  # FILE_ATTRIBUTE_READONLY
+        except:
+            pass
+
+        return is_hidden, is_system, is_readonly
+
+    # Обход всех файлов и папок
+    for root, dirs, files in os.walk(path):
+        # Все элементы (файлы + директории)
+        all_items = [os.path.join(root, f) for f in files]
+        all_items.extend([os.path.join(root, d) for d in dirs])
+
+        for item_path in all_items:
+            try:
+                hidden, system, readonly = get_attributes(item_path)
+                if hidden:
+                    stats['hidden'] += 1
+                if system:
+                    stats['system'] += 1
+                if readonly:
+                    stats['readonly'] += 1
+            except:
+                continue
+
+    return stats
+
+
+def show_windows_directory_stats(path: str) -> bool:
+    """Комплексный вывод статистики Windows каталога"""
+
+    if not os.path.exists(path):
+        print(f"❌ Путь не существует: {path}")
+        return False
+
+    if not os.path.isdir(path):
+        print(f"❌ Указанный путь не является директорией: {path}")
+        return False
+
+    print("=" * 60)
+    print(f"📁 СТАТИСТИКА КАТАЛОГА: {path}")
+    print("=" * 60)
+
+    # ═══════════════════════════════════════════════════════════
+    # 1. Общее количество файлов и папок + размер
+    # ═══════════════════════════════════════════════════════════
+    print("\n📊 ОБЩАЯ ИНФОРМАЦИЯ:")
+    print("-" * 40)
+
+    total_files = 0
+    total_folders = 0
+
+    try:
+        for root, dirs, files in os.walk(path):
+            total_files += len(files)
+            total_folders += len(dirs)
+    except (PermissionError, OSError):
+        pass
+
+    # Используем analysis.count_bytes() для подсчета размера
+    success, total_size = analysis.count_bytes(path)
+
+    if success:
+        size_mb = total_size / (1024 * 1024)
+        size_gb = total_size / (1024 * 1024 * 1024)
+
+        if size_gb >= 1:
+            size_str = f"{size_gb:.2f} ГБ"
+        else:
+            size_str = f"{size_mb:.2f} МБ"
+    else:
+        size_str = "Не удалось подсчитать"
+
+    print(f"  📄 Всего файлов:    {total_files:,}")
+    print(f"  📁 Всего папок:     {total_folders:,}")
+    print(f"  💾 Общий размер:    {size_str}")
+
+    # ═══════════════════════════════════════════════════════════
+    # 2. Распределение по типам файлов
+    # ═══════════════════════════════════════════════════════════
+    print("\n📋 РАСПРЕДЕЛЕНИЕ ПО ТИПАМ ФАЙЛОВ:")
+    print("-" * 40)
+
+    success, file_types = analysis.analyze_windows_file_types(path)
+
+    if success and file_types:
+        # Сортируем по количеству файлов (убывание)
+        sorted_types = sorted(
+            file_types.items(),
+            key=lambda x: x[1].get('count', 0) if isinstance(x[1], dict) else x[1],
+            reverse=True
+        )
+
+        # Показываем топ-10 типов
+        print(f"  {'Расширение':<15} {'Количество':>10} {'Размер':>15}")
+        print(f"  {'-' * 15} {'-' * 10} {'-' * 15}")
+
+        for ext, data in sorted_types[:10]:
+            if isinstance(data, dict):
+                count = data.get('count', 0)
+                size = data.get('size', 0)
+            else:
+                count = data
+                size = 0
+
+            if size > 0:
+                size_mb = size / (1024 * 1024)
+                size_str = f"{size_mb:.2f} МБ"
+            else:
+                size_str = "-"
+
+            ext_display = ext if ext else "(без расш.)"
+            print(f"  {ext_display:<15} {count:>10,} {size_str:>15}")
+
+        if len(sorted_types) > 10:
+            print(f"  ... и ещё {len(sorted_types) - 10} типов файлов")
+    else:
+        print("  ⚠️ Не удалось проанализировать типы файлов")
+
+    # ═══════════════════════════════════════════════════════════
+    # 3. Статистика по атрибутам Windows
+    # ═══════════════════════════════════════════════════════════
+    print("\n🏷️ АТРИБУТЫ ФАЙЛОВ WINDOWS:")
+    print("-" * 40)
+
+    attr_stats = get_windows_file_attributes_stats(path)
+
+    print(f"  👁️‍🗨️ Скрытые файлы:        {attr_stats.get('hidden', 0):,}")
+    print(f"  ⚙️  Системные файлы:       {attr_stats.get('system', 0):,}")
+    print(f"  🔒 Только для чтения:     {attr_stats.get('readonly', 0):,}")
+
+    # Процентное соотношение
+    total_items = total_files + total_folders
+    if total_items > 0:
+        hidden_pct = (attr_stats.get('hidden', 0) / total_items) * 100
+        system_pct = (attr_stats.get('system', 0) / total_items) * 100
+        readonly_pct = (attr_stats.get('readonly', 0) / total_items) * 100
+
+        print(f"\n  Процентное соотношение:")
+        print(f"  • Скрытые:           {hidden_pct:.1f}%")
+        print(f"  • Системные:         {system_pct:.1f}%")
+        print(f"  • Только для чтения: {readonly_pct:.1f}%")
+
+    # ═══════════════════════════════════════════════════════════
+    # 4. Крупнейшие файлы
+    # ═══════════════════════════════════════════════════════════
+    print("\n📦 КРУПНЕЙШИЕ ФАЙЛЫ (>10 МБ):")
+    print("-" * 40)
+
+    large_files = find_large_files_windows(min_size_mb=10.0, path=path)
+
+    if large_files:
+        # Сортируем по размеру (убывание)
+        sorted_large = sorted(large_files, key=lambda x: x['size_mb'], reverse=True)
+
+        print(f"  {'Размер':>12} {'Тип':<10} {'Путь'}")
+        print(f"  {'-' * 12} {'-' * 10} {'-' * 35}")
+
+        for file_info in sorted_large[:10]:
+            size_str = f"{file_info['size_mb']:.2f} МБ"
+            file_type = file_info['type'] if file_info['type'] else "(нет)"
+
+            # Сокращаем путь если слишком длинный
+            file_path = file_info['path']
+            if len(file_path) > 50:
+                file_path = "..." + file_path[-47:]
+
+            print(f"  {size_str:>12} {file_type:<10} {file_path}")
+
+        if len(sorted_large) > 10:
+            remaining_count = len(sorted_large) - 10
+            remaining_size = sum(f['size_mb'] for f in sorted_large[10:])
+            print(f"\n  ... и ещё {remaining_count} файлов ({remaining_size:.2f} МБ)")
+
+        # Общая статистика по крупным файлам
+        total_large_size = sum(f['size_mb'] for f in large_files)
+        print(f"\n  📊 Всего крупных файлов: {len(large_files)}")
+        print(f"  💾 Суммарный размер:     {total_large_size:.2f} МБ")
+    else:
+        print("  ✅ Крупных файлов (>10 МБ) не найдено")
+
+    # ═══════════════════════════════════════════════════════════
+    # 5. Поиск специфических типов файлов Windows
+    # ═══════════════════════════════════════════════════════════
+    print("\n🔍 СПЕЦИФИЧЕСКИЕ ФАЙЛЫ WINDOWS:")
+    print("-" * 40)
+
+    # Исполняемые файлы
+    exe_files = find_by_windows_extension(['.exe', '.msi', '.bat', '.cmd'], path)
+    print(f"  ⚡ Исполняемые (.exe, .msi, .bat, .cmd): {len(exe_files)}")
+
+    # Библиотеки
+    dll_files = find_by_windows_extension(['.dll', '.sys', '.drv'], path)
+    print(f"  📚 Библиотеки (.dll, .sys, .drv):        {len(dll_files)}")
+
+    # Документы
+    doc_files = find_by_windows_extension(['.doc', '.docx', '.pdf', '.txt'], path)
+    print(f"  📝 Документы (.doc, .docx, .pdf, .txt): {len(doc_files)}")
+
+    # Изображения
+    img_files = find_by_windows_extension(['.jpg', '.jpeg', '.png', '.gif', '.bmp'], path)
+    print(f"  🖼️ Изображения (.jpg, .png, .gif, .bmp): {len(img_files)}")
+
+    # Архивы
+    archive_files = find_by_windows_extension(['.zip', '.rar', '.7z', '.tar', '.gz'], path)
+    print(f"  📦 Архивы (.zip, .rar, .7z):             {len(archive_files)}")
+
+    # ═══════════════════════════════════════════════════════════
+    # Итоговая информация
+    # ═══════════════════════════════════════════════════════════
+    print("\n" + "=" * 60)
+    print("✅ Анализ завершён успешно")
+    print("=" * 60)
+
+    return True
+
+
+
+import os
+import search
+
+
+def run_test(title, func, *args):
+    print(f"\n=== Тест: {title} ===")
+    try:
+        result = func(*args)
+        print("Результат:")
+        print(result)
+    except Exception as e:
+        print("❌ Ошибка во время выполнения:", e)
+
+
+def main():
+    # Выбор каталога для тестирования
+    test_path = os.path.expanduser("~")
+    print(f"Будет протестирован путь: {test_path}")
+
+    print("\n========================")
+    print("    ТЕСТ SEARCH.PY")
+    print("========================")
+
+    # 1. Поиск по шаблону
+    run_test(
+        "find_files_windows('*.txt')",
+        search.find_files_windows,
+        "*.txt",
+        test_path,
+        False
+    )
+
+    # 2. Поиск по расширениям
+    run_test(
+        "find_by_windows_extension(['.exe', 'dll'])",
+        search.find_by_windows_extension,
+        ['.exe', 'dll'],
+        test_path
+    )
+
+    # 3. Поиск крупных файлов
+    run_test(
+        "find_large_files_windows(100 MB)",
+        search.find_large_files_windows,
+        100,
+        test_path
+    )
+
+    # 4. Поиск системных файлов
+    run_test(
+        "find_windows_system_files()",
+        search.find_windows_system_files,
+        test_path
+    )
+
+    # 5. Форматированный вывод результатов (пустой пример)
+    # (Выведем тестовый пример, если функция не готова)
+    try:
+        print("\n=== Тест: format_windows_search_results() ===")
+        search.format_windows_search_results(
+            ["C:/Windows/notepad.exe", "C:/Windows/System32/kernel32.dll"],
+            "system_files"
+        )
+    except Exception as e:
+        print("❌ Ошибка во время выполнения:", e)
+
+    print("\n=== Все тесты завершены ===\n")
+
+
+
+main()
