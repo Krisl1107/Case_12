@@ -43,6 +43,7 @@ def is_hidden_by_dot(name: str) -> bool:
     """
     return name.startswith('.')
 
+
 def is_junction_points(path: str) -> bool:
     """
         Check if the given path is a junction point.
@@ -279,70 +280,70 @@ def search_menu_handler(current_path: str) -> bool:
     """
     while True:
         print("\n" + "="*70)
-        print("Меню поиска в Windows")
+        print(f'{lcl.NOT_MENU}')
         print("="*70)
-        print("Пожалуйста, выберите действие:")
-        print("  1. Найти крупные файлы")
-        print("  2. Найти системные файлы Windows")
-        print("  3. Показать статистику текущей папки")
-        print("  4. Найти файлы по расширению")
-        print("  5. Найти файлы по шаблону")
-        print("  6. Выйти из меню")
-        choice = input("Введите номер пункта: ").strip()
+        print(f'{lcl.ACTION}')
+        print(f'{lcl.LARGE_FILES}')
+        print(f'{lcl.SISTEM_FILES}')
+        print(f'{lcl.STATISTIC_FOLDER}')
+        print(f'{lcl.FIND_FOLDER_1}')
+        print(f'{lcl.FIND_FOLDER_2}')
+        print(f'{lcl.END_MENU}')
+        choice = input(f'{lcl.NUMBER_MENU}').strip()
 
         match choice:
             case '1':
                 try:
-                    size_mb = float(input("Введите минимальный размер файла в МБ: "))
+                    size_mb = float(input(f'{lcl.MIN_FOLDER}'))
                 except:
-                    print("Пожалуйста, введите корректное число.")
+                    print(f'{lcl.CORRECT_NUMER}')
                     continue
                 files = find_large_files_windows(size_mb, current_path)
-                print(f"\nНайдено {len(files)} файлов(а) больше {size_mb} МБ:")
+                print(f"\n{lcl.FIND} {len(files)} {lcl.FILES_MORE} {size_mb} {lcl.M_B}")
                 if files:
-                    print(f"{'Имя файла':<40} {'Размер (МБ)':<12} {'Тип':<10}")
+                    print(f"{f'{lcl.FILE_NAME}':<40} {f'{lcl.SIZE}':<12} {f'{lcl.TYPE}':<10}")
                     print("-" * 70)
                     for f in files:
                         print(f"{f['name']:<40} {f['size_mb']:<12.2f} {f['type']:<10}")
                 else:
-                    print("Файлы не найдены.")
+                    print(f'{lcl.NOT_FILES}')
             case '2':
                 sys_files = find_windows_system_files(current_path)
-                print(f"\nОбнаружено системных файлов: {len(sys_files)}")
+                print(f"\n{lcl.SYSTEM_FILES} {len(sys_files)}")
                 for f in sys_files:
                     print(f"  {os.path.basename(f)} - {f}")
             case '3':
-                print("\nПоказ статистики текущей папки:")
+                print(f"\n{lcl.SHOW_STATISTIC}")
                 analysis.show_windows_directory_stats(current_path)
             case '4':
-                exts_input = input("Введите расширения через запятую (например: txt, pdf, exe): ").strip()
+                exts_input = input(f'{lcl.EX_INPUT}').strip()
                 if exts_input:
                     extensions = [ext.strip() for ext in exts_input.split(',')]
                     files = find_by_windows_extension(extensions, current_path)
-                    print(f"\nНайдено {len(files)} файлов с расширениями {extensions}:")
+                    print(f"\n{lcl.FIND} {len(files)} {lcl.FILES_SIZE} {extensions}:")
                     for f in files:
                         print(f"  {os.path.basename(f)} - {f}")
                 else:
-                    print("Не указаны расширения для поиска.")
+                    print(f'{lcl.NOT_SIZE}')
             case '5':
-                pattern = input("Введите шаблон для поиска (например: *.txt, test*.doc): ").strip()
+                pattern = input(f'{lcl.SAMPLE}').strip()
                 if pattern:
-                    case_sensitive = input("Чувствительность к регистру? (да/нет): ").strip().lower()
-                    is_case_sensitive = case_sensitive in ['да', 'д', 'yes', 'y']
+                    case_sensitive = input(f'{lcl.REG_SENS}').strip().lower()
+                    is_case_sensitive = case_sensitive in [f'{lcl.YES}', f'{lcl.LETTER}', 'yes', 'y']
                     files = find_files_windows(pattern, current_path, is_case_sensitive)
-                    print(f"\nНайдено {len(files)} файлов по шаблону '{pattern}':")
+                    print(f"\n{lcl.FIND} {len(files)} f'{lcl.FILES_SAMPLE}' '{pattern}':")
                     for f in files:
                         print(f"  {os.path.basename(f)} - {f}")
                 else:
-                    print("Не указан шаблон для поиска.")
+                    print(f'{lcl.NOT_SAMPLE}')
             case '6':
-                print("\nВыход из меню поиска. Возвращаюсь в основное меню.")
+                print(f"\n{lcl.END_SEARCH}")
                 return False
             case _:
-                print("Некорректный выбор. Пожалуйста, попробуйте снова.")
-        cont = input("\nХотите продолжить поиск? (да/нет): ").strip().lower()
-        if cont not in ['да', 'д', 'yes', 'y']:
-            print("Спасибо за использование меню поиска. До свидания!")
+                print(f'{lcl.INCOR_INPUT}')
+        cont = input(f"\n{lcl.CONTINUE_SEARCH}").strip().lower()
+        if cont not in [f'{lcl.YES}', f'{lcl.LETTER}', 'yes', 'y']:
+            print(f'{lcl.GOODBYE}')
             return False
 
     return True
@@ -356,18 +357,18 @@ def format_windows_search_results(results: List[Dict[str, Any]],
         search_type (str): Search description.
     """
     print("\n" + "=" * 80)
-    print(f"Результаты для поиска по типу: {search_type}")
+    print(f"{lcl.RESULT_TYPE}' {search_type}")
     print("=" * 80)
 
     if not results:
-        print("Нет результатов для отображения.")
+        print(f'{lcl.NOT_RESULT}')
         return
 
-    print(f"{'Имя файла':<40} {'Размер':<15} {'Путь':<30}")
+    print(f"{f'{lcl.FILE_NAME}':<40} {f'{lcl.SIZE}':<15} {f'{lcl.P}':<30}")
     print("-" * 80)
 
     for item in results:
-        name = item.get('name', 'Нет имени')
+        name = item.get('name', f'{lcl.NOT_NAME }')
         size_bytes = item.get('size_bytes', item.get('size', 0))
         path = item.get('path', '')
 
@@ -376,4 +377,4 @@ def format_windows_search_results(results: List[Dict[str, Any]],
         print(f"{name:<40} {size_str:<15} {path:<30}")
 
     print("=" * 80)
-    print(f"Всего найдено: {len(results)} файлов\n")
+    print(f"{lcl.ALL_FIND} {len(results)} {lcl.FILES_2}\n")
