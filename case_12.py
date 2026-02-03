@@ -4,6 +4,7 @@ from typing import List, Dict, Any
 import utils
 import navigation
 import analysis
+import fnmatch
 
 def contains_forbidden_chars(name: str) -> bool:
     """
