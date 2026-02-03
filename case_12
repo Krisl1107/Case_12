@@ -44,15 +44,15 @@ def is_hidden_by_dot(name: str) -> bool:
 
 def is_junction_points(path: str) -> bool:
     """
-    Check if the given path is a junction point.
+        Check if the given path is a junction point.
 
-    Args:
-        path (str): The filesystem path.
+        Args:
+            path (str): The filesystem path.
 
-    Returns:
-        bool: True if it is a junction point, False otherwise.
+        Returns:
+            bool: True if it is a junction point, False otherwise.
     """
-    return analysis.is_junction_points(path)
+    return os.path.islink(path)
 
 def find_files_windows(
     pattern: str,
